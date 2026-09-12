@@ -2381,6 +2381,22 @@ function ensureFirewallUI() {
     findingsSection.appendChild(findingsHeader);
     findingsSection.appendChild(findingsList);
 
+    const backendSection = document.createElement("div");
+    backendSection.className = "fw-math-box";
+    const backendTitle = document.createElement("div");
+    backendTitle.className = "fw-section-title";
+    backendTitle.textContent = "Semantic Backend Analysis";
+    const backendStatus = document.createElement("div");
+    backendStatus.className = "fw-summary-box";
+    backendStatus.textContent = "Local backend enrichment is unavailable in this context.";
+    const backendDetail = document.createElement("div");
+    backendDetail.className = "fw-signal-detail";
+    backendDetail.style.marginTop = "6px";
+    backendDetail.textContent = "Advisory only. Local risk score remains authoritative.";
+    backendSection.appendChild(backendTitle);
+    backendSection.appendChild(backendStatus);
+    backendSection.appendChild(backendDetail);
+
     // Actions Section
     const actionsWrap = document.createElement("div");
     actionsWrap.className = "fw-actions-wrap";
@@ -2412,6 +2428,7 @@ function ensureFirewallUI() {
     body.appendChild(signalsSection);
     body.appendChild(mathBox);
     body.appendChild(findingsSection);
+    body.appendChild(backendSection);
     body.appendChild(actionsWrap);
 
     // Footer
@@ -2513,6 +2530,8 @@ function ensureFirewallUI() {
       synList,
       findingsTitleSpan,
       findingsList,
+      backendStatus,
+      backendDetail,
       showToast,
       togglePanel
     };
@@ -3002,7 +3021,13 @@ function runAllFirewallScans() {
   runHiddenContentScan();
   runObfuscationScan();
   runPromptInjectionScan();
-  return runRiskAssessment();
+  const assessment = runRiskAssessment();
+  try {
+    if (typeof scheduleBackendEnrichment === "function") {
+      scheduleBackendEnrichment(assessment);
+    }
+  } catch (_) {}
+  return assessment;
 }
 
 /**
@@ -3305,6 +3330,452 @@ function flushFirewallMonitoring() {
   }
 }
 
+/**
+ * ============================================================================
+ * SECTION 13: Optional local backend enrichment (Step 11)
+ * Advisory sidecar only. Never changes local score, findings, or sanitization.
+ * ============================================================================
+ */
+
+const BACKEND_MAX_SNIPPETS = 5;
+const BACKEND_MAX_CHARS = 700;
+const BACKEND_DEBOUNCE_MS = 400;
+const BACKEND_INITIAL_BACKOFF_MS = 10000;
+const BACKEND_MAX_BACKOFF_MS = 60000;
+
+let backendEnrichmentTimer = null;
+let pendingBackendAssessment = null;
+let pendingSupersedeAssessment = null;
+let backendRequestSeq = 0;
+let backendLastCandidateKey = "";
+let backendHealthOk = false;
+let backendBlockedUntil = 0;
+let backendBackoffMs = BACKEND_INITIAL_BACKOFF_MS;
+let backendAnalyzeInFlight = false;
+let backendAbortRequested = false;
+
+function isBackendMessagingAvailable() {
+  return typeof chrome !== "undefined" &&
+    chrome &&
+    chrome.runtime &&
+    typeof chrome.runtime.sendMessage === "function";
+}
+
+function isCredentialLikeElement(el) {
+  if (!el || typeof el !== "object") return false;
+  const tag = (el.tagName || "").toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  const type = (typeof el.getAttribute === "function" ? (el.getAttribute("type") || "") : "").toLowerCase();
+  if (type === "password" || type === "email") return true;
+  const hint = (
+    (typeof el.getAttribute === "function"
+      ? (el.getAttribute("name") || "") + " " + (el.getAttribute("autocomplete") || "") + " " + (el.getAttribute("id") || "")
+      : "")
+  ).toLowerCase();
+  return /password|passwd|email|username|credit|card|ssn|secret|token|auth/.test(hint);
+}
+
+function looksLikeSecretText(text) {
+  const value = String(text || "");
+  if (!value) return false;
+  if (/\bbearer\s+[a-z0-9._\-]{12,}/i.test(value)) return true;
+  if (/\bsk-[a-z0-9]{16,}/i.test(value)) return true;
+  if (/\bapi[_-]?key\b/i.test(value) && /[a-z0-9]{24,}/i.test(value)) return true;
+  if (/\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+\./.test(value)) return true;
+  return false;
+}
+
+function assessmentHasPromptInjection(assessment) {
+  const findings = (assessment && Array.isArray(assessment.contributingFindings))
+    ? assessment.contributingFindings
+    : [];
+  for (let i = 0; i < findings.length; i++) {
+    if (findings[i] && findings[i].detector === "prompt-injection") return true;
+  }
+  return false;
+}
+
+function selectBackendCandidates(assessment) {
+  const findings = (assessment && Array.isArray(assessment.contributingFindings))
+    ? assessment.contributingFindings
+    : [];
+  if (!assessmentHasPromptInjection(assessment)) {
+    return [];
+  }
+  const snippets = [];
+  const seen = {};
+
+  for (let i = 0; i < findings.length; i++) {
+    if (snippets.length >= BACKEND_MAX_SNIPPETS) break;
+    const finding = findings[i];
+    if (!finding) continue;
+    const detector = finding.detector;
+    if (detector !== "prompt-injection" && detector !== "hidden-content" && detector !== "obfuscation") {
+      continue;
+    }
+
+    const el = finding.element;
+    if (el) {
+      if (typeof isFirewallUINode === "function" && isFirewallUINode(el)) continue;
+      if (el.id === "ai-agent-firewall-host" || (typeof el.getAttribute === "function" && el.getAttribute("id") === "ai-agent-firewall-host")) {
+        continue;
+      }
+      if (isCredentialLikeElement(el)) continue;
+      if (typeof el.getAttribute === "function" && el.getAttribute("data-firewall-quarantined") === "true") continue;
+    }
+
+    let text = finding.snippet || finding.text || "";
+    text = String(text || "").replace(/\s+/g, " ").trim();
+    if (!text || looksLikeSecretText(text)) continue;
+    if (text.length > BACKEND_MAX_CHARS) {
+      text = text.slice(0, BACKEND_MAX_CHARS);
+    }
+    const key = text.toLowerCase();
+    if (seen[key]) continue;
+    seen[key] = true;
+    snippets.push(text);
+  }
+
+  return snippets;
+}
+
+function buildBackendLocalSignals(assessment) {
+  const findings = (assessment && Array.isArray(assessment.contributingFindings))
+    ? assessment.contributingFindings
+    : [];
+  const detectors = [];
+  const categories = [];
+  const seenDet = {};
+  const seenCat = {};
+  let hidden = false;
+
+  for (let i = 0; i < findings.length; i++) {
+    const f = findings[i];
+    if (!f) continue;
+    if (f.detector && !seenDet[f.detector]) {
+      seenDet[f.detector] = true;
+      detectors.push(f.detector);
+    }
+    if (f.category && !seenCat[f.category]) {
+      seenCat[f.category] = true;
+      categories.push(f.category);
+    }
+    if (f.detector === "hidden-content") hidden = true;
+  }
+
+  return {
+    localScore: assessment && typeof assessment.score === "number" ? assessment.score : 0,
+    localRiskLevel: assessment && assessment.riskLevel ? String(assessment.riskLevel) : "LOW",
+    detectors: detectors,
+    categories: categories,
+    hidden: hidden
+  };
+}
+
+function validateAnalyzeResponse(data) {
+  if (!data || typeof data !== "object") return null;
+  if (typeof data.isThreat !== "boolean") return null;
+  if (typeof data.confidence !== "number" || !isFinite(data.confidence) || data.confidence < 0 || data.confidence > 1) {
+    return null;
+  }
+  if (typeof data.semanticRisk !== "number" || !isFinite(data.semanticRisk) || data.semanticRisk < 0 || data.semanticRisk > 100) {
+    return null;
+  }
+  if (data.category != null && typeof data.category !== "string") return null;
+  if (data.reason != null && typeof data.reason !== "string") return null;
+  if (data.recommendedAction != null && typeof data.recommendedAction !== "string") return null;
+  if (data.signals != null && !Array.isArray(data.signals)) return null;
+
+  const signals = [];
+  if (Array.isArray(data.signals)) {
+    for (let i = 0; i < data.signals.length; i++) {
+      const item = data.signals[i];
+      if (!item || typeof item !== "object") continue;
+      signals.push({
+        type: typeof item.type === "string" ? item.type : "",
+        confidence: (typeof item.confidence === "number" && isFinite(item.confidence)) ? item.confidence : null,
+        evidence: typeof item.evidence === "string" ? item.evidence.slice(0, BACKEND_MAX_CHARS) : ""
+      });
+    }
+  }
+
+  return {
+    isThreat: data.isThreat,
+    confidence: data.confidence,
+    semanticRisk: data.semanticRisk,
+    category: typeof data.category === "string" ? data.category : "",
+    reason: typeof data.reason === "string" ? data.reason : "",
+    signals: signals,
+    recommendedAction: typeof data.recommendedAction === "string" ? data.recommendedAction : ""
+  };
+}
+
+function setBackendEnrichment(state) {
+  if (typeof window === "undefined") return;
+  if (!window.AIAgentFirewall) {
+    window.AIAgentFirewall = {};
+  }
+  window.AIAgentFirewall.backendEnrichment = state;
+  try {
+    renderBackendEnrichmentUI(state);
+  } catch (_) {}
+}
+
+function renderBackendEnrichmentUI(state) {
+  const ui = typeof firewallUICache !== "undefined" ? firewallUICache : null;
+  if (!ui || !ui.backendStatus) return;
+
+  const status = (state && state.status) || "offline";
+  let headline = "Local semantic backend is unavailable.";
+  let detail = "Advisory only. The local firewall score and sanitization rules remain authoritative.";
+
+  if (status === "pending") {
+    headline = "Checking local semantic backend…";
+  } else if (status === "offline") {
+    headline = "Semantic backend offline / unavailable.";
+  } else if (status === "error") {
+    headline = "Backend error. Local assessment unchanged.";
+    if (state && state.error) {
+      detail = "Error: " + String(state.error) + ". Local score and quarantine behavior were not modified.";
+    }
+  } else if (status === "clean") {
+    headline = "No additional semantic threat.";
+    if (state && state.reason) {
+      detail = String(state.reason);
+    }
+  } else if (status === "threat") {
+    headline = "Semantic backend flagged additional threat (advisory).";
+    const parts = [];
+    if (state.category) parts.push("Category: " + state.category);
+    if (typeof state.confidence === "number") parts.push("Confidence: " + state.confidence);
+    if (typeof state.semanticRisk === "number") parts.push("Semantic risk: " + state.semanticRisk);
+    if (state.reason) parts.push(state.reason);
+    if (state.recommendedAction) {
+      parts.push("Backend suggested action: " + state.recommendedAction + " (not applied automatically).");
+    }
+    if (state.signals && state.signals.length > 0 && state.signals[0].evidence) {
+      parts.push("Evidence: " + state.signals[0].evidence);
+    }
+    if (parts.length > 0) detail = parts.join(" ");
+  }
+
+  ui.backendStatus.textContent = headline;
+  if (ui.backendDetail) {
+    ui.backendDetail.textContent = detail;
+  }
+}
+
+function sendBackendMessage(message, onComplete) {
+  if (!isBackendMessagingAvailable()) {
+    onComplete({ ok: false, error: "offline" });
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage(message, function (response) {
+      const runtimeError = chrome.runtime && chrome.runtime.lastError;
+      if (runtimeError) {
+        onComplete({ ok: false, error: runtimeError.message || "runtime_error" });
+        return;
+      }
+      onComplete(response && typeof response === "object" ? response : { ok: false, error: "empty_response" });
+    });
+  } catch (err) {
+    onComplete({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
+}
+
+function noteBackendFailure(errorName) {
+  backendHealthOk = false;
+  backendBlockedUntil = Date.now() + backendBackoffMs;
+  backendBackoffMs = Math.min(BACKEND_MAX_BACKOFF_MS, backendBackoffMs * 2);
+  setBackendEnrichment({
+    status: errorName === "offline" || errorName === "timeout" || errorName === "network_error" ? "offline" : "error",
+    error: errorName || "backend_error",
+    isThreat: false
+  });
+}
+
+function noteBackendSuccess() {
+  backendHealthOk = true;
+  backendBlockedUntil = 0;
+  backendBackoffMs = BACKEND_INITIAL_BACKOFF_MS;
+}
+
+function startQueuedBackendEnrichment() {
+  const queued = pendingSupersedeAssessment;
+  pendingSupersedeAssessment = null;
+  backendAbortRequested = false;
+  if (queued) {
+    runBackendEnrichment(queued);
+  }
+}
+
+function runBackendEnrichment(assessment) {
+  if (!isBackendMessagingAvailable()) return;
+  if (!assessment) return;
+
+  if (backendAnalyzeInFlight) {
+    pendingSupersedeAssessment = assessment;
+    if (!backendAbortRequested) {
+      backendAbortRequested = true;
+      sendBackendMessage({ type: "PROMPTARMOR_ABORT" }, function () {});
+    }
+    return;
+  }
+
+  if (Date.now() < backendBlockedUntil) {
+    setBackendEnrichment({
+      status: "offline",
+      error: "backoff",
+      isThreat: false
+    });
+    return;
+  }
+
+  const snippets = selectBackendCandidates(assessment);
+  if (snippets.length === 0) {
+    backendLastCandidateKey = "";
+    setBackendEnrichment({
+      status: "clean",
+      isThreat: false,
+      reason: "No bounded local findings were eligible for semantic enrichment."
+    });
+    startQueuedBackendEnrichment();
+    return;
+  }
+
+  const text = snippets.join("\n---\n");
+  const localSignals = buildBackendLocalSignals(assessment);
+  const candidateKey = text + "|" + localSignals.localScore + "|" + localSignals.localRiskLevel;
+  if (candidateKey === backendLastCandidateKey && window.AIAgentFirewall && window.AIAgentFirewall.backendEnrichment) {
+    const prev = window.AIAgentFirewall.backendEnrichment.status;
+    if (prev === "threat" || prev === "clean") {
+      startQueuedBackendEnrichment();
+      return;
+    }
+  }
+
+  const seq = ++backendRequestSeq;
+  backendAnalyzeInFlight = true;
+  backendAbortRequested = false;
+  setBackendEnrichment({ status: "pending", isThreat: false });
+
+  const payload = {
+    text: text,
+    source: "webpage",
+    localSignals: localSignals
+  };
+
+  sendBackendMessage({ type: "PROMPTARMOR_ANALYZE", payload: payload }, function (response) {
+    if (seq !== backendRequestSeq && !pendingSupersedeAssessment) {
+      return;
+    }
+
+    backendAnalyzeInFlight = false;
+
+    const queued = pendingSupersedeAssessment;
+    pendingSupersedeAssessment = null;
+    backendAbortRequested = false;
+
+    if (queued) {
+      runBackendEnrichment(queued);
+      return;
+    }
+
+    if (seq !== backendRequestSeq) {
+      return;
+    }
+
+    if (!response || response.ok !== true) {
+      noteBackendFailure((response && response.error) || "backend_error");
+      return;
+    }
+    const validated = validateAnalyzeResponse(response.data);
+    if (!validated) {
+      noteBackendFailure("malformed_response");
+      return;
+    }
+    noteBackendSuccess();
+    backendLastCandidateKey = candidateKey;
+    if (validated.isThreat) {
+      setBackendEnrichment({
+        status: "threat",
+        isThreat: true,
+        confidence: validated.confidence,
+        semanticRisk: validated.semanticRisk,
+        category: validated.category,
+        reason: validated.reason,
+        signals: validated.signals,
+        recommendedAction: validated.recommendedAction
+      });
+    } else {
+      setBackendEnrichment({
+        status: "clean",
+        isThreat: false,
+        confidence: validated.confidence,
+        semanticRisk: validated.semanticRisk,
+        category: validated.category,
+        reason: validated.reason || "No additional semantic threat.",
+        signals: validated.signals,
+        recommendedAction: validated.recommendedAction
+      });
+    }
+  });
+}
+
+function scheduleBackendEnrichment(assessment) {
+  if (!isBackendMessagingAvailable()) return;
+  pendingBackendAssessment = assessment || null;
+  if (backendEnrichmentTimer !== null) return;
+  if (typeof setTimeout !== "function") {
+    const ready = pendingBackendAssessment;
+    pendingBackendAssessment = null;
+    runBackendEnrichment(ready);
+    return;
+  }
+  backendEnrichmentTimer = setTimeout(function () {
+    backendEnrichmentTimer = null;
+    const ready = pendingBackendAssessment;
+    pendingBackendAssessment = null;
+    runBackendEnrichment(ready);
+  }, BACKEND_DEBOUNCE_MS);
+}
+
+function flushBackendEnrichment() {
+  if (backendEnrichmentTimer !== null && typeof clearTimeout === "function") {
+    try { clearTimeout(backendEnrichmentTimer); } catch (_) {}
+    backendEnrichmentTimer = null;
+  }
+  const ready = pendingBackendAssessment;
+  pendingBackendAssessment = null;
+  if (ready) {
+    runBackendEnrichment(ready);
+  }
+}
+
+function isBackendAnalyzeInFlight() {
+  return backendAnalyzeInFlight === true;
+}
+
+function resetBackendEnrichmentState() {
+  if (backendEnrichmentTimer !== null && typeof clearTimeout === "function") {
+    try { clearTimeout(backendEnrichmentTimer); } catch (_) {}
+    backendEnrichmentTimer = null;
+  }
+  pendingBackendAssessment = null;
+  pendingSupersedeAssessment = null;
+  backendRequestSeq = 0;
+  backendLastCandidateKey = "";
+  backendHealthOk = false;
+  backendBlockedUntil = 0;
+  backendBackoffMs = BACKEND_INITIAL_BACKOFF_MS;
+  backendAnalyzeInFlight = false;
+  backendAbortRequested = false;
+  if (typeof window !== "undefined" && window.AIAgentFirewall) {
+    window.AIAgentFirewall.backendEnrichment = null;
+  }
+}
+
 // Expose public API methods on window.AIAgentFirewall
 if (typeof window !== "undefined") {
   if (!window.AIAgentFirewall) {
@@ -3350,7 +3821,15 @@ if (typeof window !== "undefined") {
     stopMutationMonitoring: stopFirewallMonitoring,
     isMutationMonitoringActive: isFirewallMonitoringActive,
     flushMutationMonitoring: flushFirewallMonitoring,
-    getMonitoringPassCount: () => monitoringPassCount
+    getMonitoringPassCount: () => monitoringPassCount,
+    selectBackendCandidates,
+    validateAnalyzeResponse,
+    scheduleBackendEnrichment,
+    flushBackendEnrichment,
+    isBackendMessagingAvailable,
+    isBackendAnalyzeInFlight,
+    resetBackendEnrichmentState,
+    getBackendEnrichment: () => window.AIAgentFirewall.backendEnrichment
   });
 }
 
