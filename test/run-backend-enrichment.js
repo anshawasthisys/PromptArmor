@@ -533,7 +533,9 @@ try {
 assert(threw === false, "Backend failure does not break local scanning");
 
 var capturedAnalyzeBodies = [];
+var capturedAnalyzeUrls = [];
 var fetch = function (url, options) {
+  capturedAnalyzeUrls.push(String(url || ""));
   capturedAnalyzeBodies.push(options && options.body ? String(options.body) : "");
   return Promise.resolve({
     ok: true,
@@ -586,6 +588,7 @@ for (let i = 0; i < capturedAnalyzeBodies.length; i++) {
   } catch (_) {}
 }
 assert(cappedOk, "Oversized payload is capped to 4000 characters before fetch", "bodies=" + capturedAnalyzeBodies.length + " capDone=" + capDone);
+assert(capturedAnalyzeUrls.length > 0 && capturedAnalyzeUrls[0].indexOf("http://172.18.239.233:8000/analyze") === 0, "Worker fetch uses the configured backend origin", "url=" + (capturedAnalyzeUrls[0] || ""));
 
 if (typeof print === "function") {
   print("TOTAL TESTS EXECUTED: " + (passedCount + failedCount));

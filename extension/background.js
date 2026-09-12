@@ -1,11 +1,27 @@
 /**
  * PromptArmor background network adapter (Step 11).
- * Dumb localhost proxy only: health + analyze. No DOM, scoring, sanitization, or storage.
+ * Dumb localhost proxy only: analyze. No DOM, scoring, sanitization, or storage.
+ *
+ * BACKEND_ORIGIN is the configured FastAPI base URL.
+ * DEFAULT_BACKEND_ORIGIN is used when the override is empty or invalid.
  */
 
-const BACKEND_ORIGIN = "http://127.0.0.1:8000";
+const DEFAULT_BACKEND_ORIGIN = "http://127.0.0.1:8000";
+const BACKEND_ORIGIN = "http://172.18.239.233:8000";
+const ALLOWED_BACKEND_ORIGINS = [
+  DEFAULT_BACKEND_ORIGIN,
+  "http://172.18.239.233:8000"
+];
 const BACKEND_TIMEOUT_MS = 2000;
 const BACKEND_MAX_ANALYZE_TEXT = 4000;
+
+function resolveBackendOrigin() {
+  const configured = typeof BACKEND_ORIGIN === "string" ? BACKEND_ORIGIN.replace(/\/+$/, "") : "";
+  if (configured && ALLOWED_BACKEND_ORIGINS.indexOf(configured) !== -1) {
+    return configured;
+  }
+  return DEFAULT_BACKEND_ORIGIN;
+}
 
 let analyzeAbortController = null;
 let analyzeInFlight = false;
@@ -98,7 +114,7 @@ function fetchAnalyze(url, options) {
 function handleAnalyze(payload) {
   const normalized = normalizeAnalyzePayload(payload);
   return fetchAnalyze(
-    BACKEND_ORIGIN + "/analyze",
+    resolveBackendOrigin() + "/analyze",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
