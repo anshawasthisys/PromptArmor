@@ -3011,11 +3011,26 @@ function runAllFirewallScans() {
  * ============================================================================
  */
 
+// Coalesce mutation bursts into a single pipeline pass. 32ms is short enough
+// for interactive detection and long enough to batch typical DOM write storms.
+const MONITORING_DEBOUNCE_MS = 32;
+
+const FIREWALL_MUTATION_OBSERVE_OPTIONS = {
+  childList: true,
+  subtree: true,
+  characterData: true,
+  attributes: true
+  // attributeFilter is intentionally omitted: MutationObserver only matches
+  // exact names and cannot express data-*. Relevant attributes are filtered
+  // in handleMutationRecords (style, class, hidden, aria-*, title, alt, data-*).
+};
+
 let activeMutationObserver = null;
 let activeObservedRoot = null;
 let monitoringTimer = null;
 let isMonitoringProcessing = false;
 let monitoringPassCount = 0;
+let monitoringDomReadyBound = false;
 
 /**
  * Check if a node belongs to PromptArmor's firewall UI (#ai-agent-firewall-host or descendants/shadow root).
@@ -3074,9 +3089,7 @@ function isRelevantAttribute(attrName) {
  */
 function cancelScheduledMonitoringScan() {
   if (monitoringTimer !== null) {
-    if (typeof cancelAnimationFrame === "function" && typeof monitoringTimer === "number") {
-      try { cancelAnimationFrame(monitoringTimer); } catch (_) {}
-    } else if (typeof clearTimeout === "function" && typeof monitoringTimer === "number") {
+    if (typeof clearTimeout === "function") {
       try { clearTimeout(monitoringTimer); } catch (_) {}
     }
     monitoringTimer = null;
@@ -3084,42 +3097,47 @@ function cancelScheduledMonitoringScan() {
 }
 
 /**
- * Schedule a batched/debounced monitoring scan using rAF / microtask / setTimeout.
+ * Run the existing authoritative PromptArmor pipeline once.
+ * Detection only: never sanitizes. Errors are isolated so monitoring stays usable.
+ */
+function runCoalescedMonitoringScan() {
+  if (!activeMutationObserver || isSanitizing || isMonitoringProcessing) {
+    return;
+  }
+  isMonitoringProcessing = true;
+  try {
+    monitoringPassCount++;
+    const scanFn = (
+      typeof window !== "undefined" &&
+      window.AIAgentFirewall &&
+      typeof window.AIAgentFirewall.runAllFirewallScans === "function"
+    )
+      ? window.AIAgentFirewall.runAllFirewallScans
+      : runAllFirewallScans;
+    scanFn();
+  } catch (err) {
+    console.warn("AI Agent Firewall: Error during continuous monitoring scan:", err);
+  } finally {
+    isMonitoringProcessing = false;
+  }
+}
+
+/**
+ * Schedule one debounced monitoring scan for the current mutation burst.
+ * Duplicate scheduling is ignored until the pending timer fires or is cancelled.
  */
 function scheduleMonitoringScan() {
   if (monitoringTimer !== null) {
-    return; // Already scheduled in current window
+    return;
   }
-
-  const executeScan = () => {
+  if (typeof setTimeout !== "function") {
+    runCoalescedMonitoringScan();
+    return;
+  }
+  monitoringTimer = setTimeout(() => {
     monitoringTimer = null;
-    if (!activeMutationObserver || isSanitizing || isMonitoringProcessing) {
-      return;
-    }
-    isMonitoringProcessing = true;
-    try {
-      monitoringPassCount++;
-      runAllFirewallScans();
-    } catch (err) {
-      console.warn("AI Agent Firewall: Error during continuous monitoring scan:", err);
-    } finally {
-      isMonitoringProcessing = false;
-    }
-  };
-
-  if (typeof requestAnimationFrame === "function") {
-    monitoringTimer = requestAnimationFrame(executeScan);
-  } else if (typeof queueMicrotask === "function") {
-    monitoringTimer = true;
-    queueMicrotask(executeScan);
-  } else if (typeof Promise !== "undefined") {
-    monitoringTimer = true;
-    Promise.resolve().then(executeScan);
-  } else if (typeof setTimeout === "function") {
-    monitoringTimer = setTimeout(executeScan, 16);
-  } else {
-    executeScan();
-  }
+    runCoalescedMonitoringScan();
+  }, MONITORING_DEBOUNCE_MS);
 }
 
 /**
@@ -3127,61 +3145,65 @@ function scheduleMonitoringScan() {
  * Filters out PromptArmor UI updates, sanitization mutations, and irrelevant attribute changes.
  */
 function handleMutationRecords(mutationsList) {
-  if (isSanitizing || isMonitoringProcessing || !activeMutationObserver) {
-    return;
-  }
-
-  let hasRelevantMutations = false;
-
-  for (let i = 0; i < mutationsList.length; i++) {
-    const mutation = mutationsList[i];
-    if (!mutation) continue;
-
-    // Ignore mutations originating from PromptArmor's own UI
-    if (isFirewallUINode(mutation.target)) {
-      continue;
+  try {
+    if (isSanitizing || isMonitoringProcessing || !activeMutationObserver) {
+      return;
     }
 
-    if (mutation.type === "childList") {
-      if (mutation.addedNodes && mutation.addedNodes.length > 0) {
-        for (let j = 0; j < mutation.addedNodes.length; j++) {
-          const node = mutation.addedNodes[j];
-          if (!isFirewallUINode(node)) {
-            hasRelevantMutations = true;
-            break;
+    let hasRelevantMutations = false;
+
+    for (let i = 0; i < mutationsList.length; i++) {
+      const mutation = mutationsList[i];
+      if (!mutation) continue;
+
+      // Ignore mutations originating from PromptArmor's own UI / Shadow DOM
+      if (isFirewallUINode(mutation.target)) {
+        continue;
+      }
+
+      if (mutation.type === "childList") {
+        if (mutation.addedNodes && mutation.addedNodes.length > 0) {
+          for (let j = 0; j < mutation.addedNodes.length; j++) {
+            const node = mutation.addedNodes[j];
+            if (!isFirewallUINode(node)) {
+              hasRelevantMutations = true;
+              break;
+            }
           }
         }
-      }
-      if (!hasRelevantMutations && mutation.removedNodes && mutation.removedNodes.length > 0) {
-        for (let j = 0; j < mutation.removedNodes.length; j++) {
-          const node = mutation.removedNodes[j];
-          if (!isFirewallUINode(node)) {
-            hasRelevantMutations = true;
-            break;
+        if (!hasRelevantMutations && mutation.removedNodes && mutation.removedNodes.length > 0) {
+          for (let j = 0; j < mutation.removedNodes.length; j++) {
+            const node = mutation.removedNodes[j];
+            if (!isFirewallUINode(node)) {
+              hasRelevantMutations = true;
+              break;
+            }
           }
         }
+      } else if (mutation.type === "characterData") {
+        const target = mutation.target;
+        const el = (target && target.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3))
+          ? (target.parentElement || target.parentNode)
+          : target;
+        if (el && !isFirewallUINode(el)) {
+          hasRelevantMutations = true;
+        }
+      } else if (mutation.type === "attributes") {
+        if (isRelevantAttribute(mutation.attributeName) && !isFirewallUINode(mutation.target)) {
+          hasRelevantMutations = true;
+        }
       }
-    } else if (mutation.type === "characterData") {
-      const target = mutation.target;
-      const el = (target && target.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3))
-        ? (target.parentElement || target.parentNode)
-        : target;
-      if (el && !isFirewallUINode(el)) {
-        hasRelevantMutations = true;
-      }
-    } else if (mutation.type === "attributes") {
-      if (isRelevantAttribute(mutation.attributeName)) {
-        hasRelevantMutations = true;
+
+      if (hasRelevantMutations) {
+        break;
       }
     }
 
     if (hasRelevantMutations) {
-      break;
+      scheduleMonitoringScan();
     }
-  }
-
-  if (hasRelevantMutations) {
-    scheduleMonitoringScan();
+  } catch (err) {
+    console.warn("AI Agent Firewall: MutationObserver callback error:", err);
   }
 }
 
@@ -3190,63 +3212,55 @@ function handleMutationRecords(mutationsList) {
  * Idempotent: starting multiple times does not create multiple observers.
  */
 function startFirewallMonitoring(targetNode = null) {
-  const root = targetNode || (typeof document !== "undefined" ? document.body || document.documentElement : null);
-
-  if (activeMutationObserver !== null) {
-    if (targetNode && targetNode !== activeObservedRoot && root) {
-      try {
-        activeMutationObserver.disconnect();
-        activeMutationObserver.observe(root, {
-          childList: true,
-          subtree: true,
-          characterData: true,
-          attributes: true
-        });
-        activeObservedRoot = root;
-      } catch (err) {
-        console.warn("AI Agent Firewall: Error re-observing new targetNode:", err);
-      }
-    }
-    return activeMutationObserver;
-  }
-
-  const ObserverClass = typeof MutationObserver !== "undefined"
-    ? MutationObserver
-    : (typeof window !== "undefined" && window.MutationObserver ? window.MutationObserver : null);
-
-  if (!ObserverClass) {
-    return null;
-  }
-
-  if (!root) {
-    // If neither body nor documentElement is available yet, wait for DOMContentLoaded
-    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
-      const onReady = () => {
-        document.removeEventListener("DOMContentLoaded", onReady);
-        startFirewallMonitoring();
-      };
-      document.addEventListener("DOMContentLoaded", onReady);
-    }
-    return null;
-  }
-
   try {
+    const root = targetNode || (typeof document !== "undefined" ? document.body || document.documentElement : null);
+
+    if (activeMutationObserver !== null) {
+      if (targetNode && targetNode !== activeObservedRoot && root) {
+        try {
+          activeMutationObserver.disconnect();
+          activeMutationObserver.observe(root, FIREWALL_MUTATION_OBSERVE_OPTIONS);
+          activeObservedRoot = root;
+        } catch (err) {
+          console.warn("AI Agent Firewall: Error re-observing new targetNode:", err);
+        }
+      }
+      return activeMutationObserver;
+    }
+
+    const ObserverClass = typeof MutationObserver !== "undefined"
+      ? MutationObserver
+      : (typeof window !== "undefined" && window.MutationObserver ? window.MutationObserver : null);
+
+    if (!ObserverClass) {
+      return null;
+    }
+
+    if (!root) {
+      if (!monitoringDomReadyBound && typeof document !== "undefined" && typeof document.addEventListener === "function") {
+        monitoringDomReadyBound = true;
+        const onReady = () => {
+          document.removeEventListener("DOMContentLoaded", onReady);
+          monitoringDomReadyBound = false;
+          if (!activeMutationObserver) {
+            startFirewallMonitoring();
+          }
+        };
+        document.addEventListener("DOMContentLoaded", onReady);
+      }
+      return null;
+    }
+
     activeMutationObserver = new ObserverClass(handleMutationRecords);
-    activeMutationObserver.observe(root, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-      attributes: true
-    });
+    activeMutationObserver.observe(root, FIREWALL_MUTATION_OBSERVE_OPTIONS);
     activeObservedRoot = root;
+    return activeMutationObserver;
   } catch (err) {
     console.warn("AI Agent Firewall: Failed to initialize MutationObserver:", err);
     activeMutationObserver = null;
     activeObservedRoot = null;
     return null;
   }
-
-  return activeMutationObserver;
 }
 
 /**
@@ -3287,15 +3301,7 @@ function isFirewallMonitoringActive() {
 function flushFirewallMonitoring() {
   if (monitoringTimer !== null) {
     cancelScheduledMonitoringScan();
-    if (activeMutationObserver && !isSanitizing && !isMonitoringProcessing) {
-      isMonitoringProcessing = true;
-      try {
-        monitoringPassCount++;
-        runAllFirewallScans();
-      } finally {
-        isMonitoringProcessing = false;
-      }
-    }
+    runCoalescedMonitoringScan();
   }
 }
 
