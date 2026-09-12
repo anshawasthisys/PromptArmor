@@ -132,7 +132,7 @@ const HOMOGLYPH_MAP = {
  * Collapses whitespace and trims text.
  */
 function normalizeWhitespace(text) {
-  return (text || "").replace(/\s+/g, " ").trim();
+  return (text || "").replace(/[^\S\uFEFF]+/g, " ").trim();
 }
 
 /**
@@ -253,6 +253,32 @@ function extractPageContent(root = document.body) {
           text: text,
           element: element
         });
+      }
+    }
+
+    // Also inspect non-rendered metadata/accessibility attributes that AI agents consume
+    if (typeof element.getAttribute === "function") {
+      const ariaLabel = element.getAttribute("aria-label");
+      if (ariaLabel && typeof ariaLabel === "string") {
+        const normAria = normalizeWhitespace(ariaLabel);
+        if (normAria.length > 0) {
+          textBlocks.push({
+            tag: `${element.tagName.toLowerCase()}[aria-label]`,
+            text: normAria,
+            element: element
+          });
+        }
+      }
+      const titleAttr = element.getAttribute("title");
+      if (titleAttr && typeof titleAttr === "string") {
+        const normTitle = normalizeWhitespace(titleAttr);
+        if (normTitle.length > 0) {
+          textBlocks.push({
+            tag: `${element.tagName.toLowerCase()}[title]`,
+            text: normTitle,
+            element: element
+          });
+        }
       }
     }
 
@@ -504,7 +530,10 @@ function detectHiddenContent(root = document.body) {
     const hiddenInfo = checkHiddenTechnique(element);
 
     if (hiddenInfo) {
-      const extractedText = normalizeWhitespace(element.textContent);
+      let extractedText = normalizeWhitespace(element.textContent);
+      if (!extractedText && typeof element.getAttribute === "function") {
+        extractedText = normalizeWhitespace(element.getAttribute("aria-label") || element.getAttribute("title") || "");
+      }
 
       if (extractedText.length > 0) {
         counter++;
@@ -2921,6 +2950,12 @@ function sanitizeSuspiciousContent(customAssessment = null) {
         element.textContent = cleaned;
         if (typeof element.innerText !== "undefined") element.innerText = cleaned;
         actionType = "stripped-evasion-unicode";
+      }
+
+      // Neutralize non-rendered hostile attributes on quarantined element
+      if (typeof element.removeAttribute === "function") {
+        if (element.getAttribute("aria-label")) element.removeAttribute("aria-label");
+        if (element.getAttribute("title")) element.removeAttribute("title");
       }
 
       // 4. Stamp Element with Quarantine Attributes (safe DOM APIs)

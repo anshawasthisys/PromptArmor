@@ -51,6 +51,10 @@ class MockElement extends MockNode {
     return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
   }
 
+  removeAttribute(name) {
+    delete this.attributes[name];
+  }
+
   get style() {
     return this._style;
   }
