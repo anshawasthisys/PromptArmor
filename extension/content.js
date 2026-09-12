@@ -2432,7 +2432,17 @@ function ensureFirewallUI() {
     }
 
     sanitizeBtn.addEventListener("click", () => {
-      showToast("ℹ️ Sanitization will be implemented in Step 9. For now, the page remains unmodified for security inspection.");
+      showToast("🛡 Quarantining suspicious elements and re-scanning...");
+      setTimeout(() => {
+        if (typeof sanitizeSuspiciousContent === "function") {
+          const result = sanitizeSuspiciousContent();
+          if (result && result.quarantinedCount > 0) {
+            showToast(`✓ Quarantined ${result.quarantinedCount} element(s). Page re-scanned: Risk score is now ${result.newAssessment.score}/100 (${result.newAssessment.riskLevel}).`);
+          } else {
+            showToast("ℹ️ No eligible suspicious content detected to sanitize.");
+          }
+        }
+      }, 50);
     });
 
     rescanBtn.addEventListener("click", () => {
@@ -2758,6 +2768,200 @@ function renderOrUpdateFirewallUI(assessment) {
   }
 }
 
+/**
+ * ============================================================================
+ * SECTION 11: Sanitization & Quarantine Engine (Step 9)
+ * ============================================================================
+ */
+
+// In-memory session-only quarantine audit log (never persisted to storage/network)
+const sessionQuarantineLog = [];
+let isSanitizing = false;
+
+/**
+ * Check whether a node is immune to sanitization.
+ */
+function isElementImmune(element) {
+  if (!element || typeof element !== "object") return true;
+
+  // Root and top-level structural containers are never deleted/altered as units
+  if (typeof document !== "undefined") {
+    if (element === document.documentElement || element === document.body || element === document.head) {
+      return true;
+    }
+  }
+
+  const tagName = (element.tagName || "").toUpperCase();
+  if (["HTML", "HEAD", "BODY", "MAIN", "ARTICLE"].includes(tagName)) {
+    return true;
+  }
+
+  // Firewall's own host and Shadow DOM are strictly immune
+  if (element.id === "ai-agent-firewall-host") return true;
+  if (typeof element.closest === "function" && element.closest("#ai-agent-firewall-host")) return true;
+
+  // Check if inside shadow root of firewall host
+  let cur = element.parentElement || element.parentNode;
+  while (cur) {
+    if (cur.id === "ai-agent-firewall-host" || (cur.host && cur.host.id === "ai-agent-firewall-host")) {
+      return true;
+    }
+    cur = cur.parentElement || cur.parentNode || cur.host;
+  }
+
+  // Idempotency: Already quarantined elements are immune from further modification
+  if (typeof element.getAttribute === "function" && element.getAttribute("data-firewall-quarantined") === "true") {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Finding-driven sanitization and quarantine engine.
+ * Neutralizes verified threats while preserving benign visible content and structural integrity.
+ */
+function sanitizeSuspiciousContent(customAssessment = null) {
+  if (isSanitizing) {
+    return { quarantinedCount: 0, quarantinedElements: [], newAssessment: null, quarantineLog: [...sessionQuarantineLog] };
+  }
+  isSanitizing = true;
+
+  try {
+    const assessment = customAssessment ||
+      (typeof window !== "undefined" && window.AIAgentFirewall?.riskAssessment) ||
+      assessPageRisk();
+
+    if (!assessment || !Array.isArray(assessment.contributingFindings) || assessment.contributingFindings.length === 0) {
+      return {
+        quarantinedCount: 0,
+        quarantinedElements: [],
+        newAssessment: assessment,
+        quarantineLog: [...sessionQuarantineLog]
+      };
+    }
+
+    // 1. Group findings by their unique underlying DOM element reference
+    const elementToFindings = new Map();
+    for (const finding of assessment.contributingFindings) {
+      const el = finding.element;
+      if (!el || isElementImmune(el)) continue;
+
+      if (!elementToFindings.has(el)) {
+        elementToFindings.set(el, []);
+      }
+      elementToFindings.get(el).push(finding);
+    }
+
+    const quarantinedNodes = [];
+
+    // 2. Evaluate each unique candidate element against strict decision rules
+    for (const [element, findings] of elementToFindings.entries()) {
+      if (isElementImmune(element)) continue;
+
+      // Extract finding signals for this element
+      const injectionFindings = findings.filter(f => f.detector === "prompt-injection" && (f.confidence === undefined || f.confidence >= 0.70));
+      const hiddenFindings = findings.filter(f => f.detector === "hidden-content");
+      const obfuscationFindings = findings.filter(f => f.detector === "obfuscation");
+
+      let hasInjection = injectionFindings.length > 0;
+      const isHidden = hiddenFindings.length > 0;
+      const isObfuscated = obfuscationFindings.length > 0;
+
+      // RULE 1: Unaccompanied hidden content (e.g. benign navigation, a11y menus, modals) is strictly NOT sanitized
+      if (isHidden && !hasInjection && !isObfuscated) {
+        continue;
+      }
+
+      // RULE 2: Invisible Unicode / zero-width characters are only sanitized if verified adversarial (homoglyphs, control-override, zalgo) OR associated with injection
+      if (isObfuscated && !hasInjection) {
+        const cleaned = cleanAndNormalizeText(element.textContent || "");
+        const hasInjectionInCleaned = cleaned ? testTextForPromptInjection(cleaned).length > 0 : false;
+        if (hasInjectionInCleaned) {
+          hasInjection = true;
+        } else {
+          const hasVerifiedAdversarialObf = obfuscationFindings.some(f =>
+            ["control-override", "homoglyphs", "combining-marks"].includes(f.category)
+          );
+          if (!hasVerifiedAdversarialObf) {
+            continue; // Strictly preserve legitimate Unicode typography (ZWJ/ZWNJ, emojis, scripts)
+          }
+        }
+      }
+
+      // If no valid threat condition matches, do not touch this element
+      if (!hasInjection && !isObfuscated) {
+        continue;
+      }
+
+      // 3. Apply Safe Neutralization Strategy
+      let actionType = "";
+      let originalSnippet = findings[0].snippet || "";
+
+      if (isHidden && hasInjection) {
+        // Scenario A: Hidden malicious payload. Clear payload text while preserving tag/DOM element to protect layout
+        element.textContent = "";
+        if (typeof element.innerText !== "undefined") element.innerText = "";
+        actionType = "cleared-hidden-payload";
+      } else if (isObfuscated && hasInjection) {
+        // Scenario B: Obfuscated prompt injection. Defang with safe quarantine sentinel
+        const sentinel = "[AI Firewall Quarantined: Malicious obfuscated payload neutralized]";
+        element.textContent = sentinel;
+        if (typeof element.innerText !== "undefined") element.innerText = sentinel;
+        actionType = "neutralized-obfuscated-injection";
+      } else if (hasInjection) {
+        // Scenario C: Visible prompt injection. Replace hostile text with sentinel tag
+        const sentinel = "[AI Firewall Quarantined: Suspicious prompt instruction neutralized]";
+        element.textContent = sentinel;
+        if (typeof element.innerText !== "undefined") element.innerText = sentinel;
+        actionType = "neutralized-visible-injection";
+      } else if (isObfuscated) {
+        // Scenario D: High-confidence isolated evasion payload without prompt injection
+        const cleaned = cleanAndNormalizeText(element.textContent || "");
+        element.textContent = cleaned;
+        if (typeof element.innerText !== "undefined") element.innerText = cleaned;
+        actionType = "stripped-evasion-unicode";
+      }
+
+      // 4. Stamp Element with Quarantine Attributes (safe DOM APIs)
+      if (typeof element.setAttribute === "function") {
+        element.setAttribute("data-firewall-quarantined", "true");
+        element.setAttribute("data-firewall-quarantine-type", actionType);
+        element.setAttribute("data-firewall-quarantine-time", String(Date.now()));
+      }
+
+      // 5. Session-only audit log entry (no persistence across sessions, no telemetry)
+      const logEntry = {
+        id: `quarantine_${Date.now()}_${sessionQuarantineLog.length + 1}`,
+        timestamp: Date.now(),
+        tagName: element.tagName || "ELEMENT",
+        quarantineType: actionType,
+        originalSnippet: originalSnippet,
+        findingCategories: findings.map(f => f.category).filter(Boolean)
+      };
+      sessionQuarantineLog.push(logEntry);
+      quarantinedNodes.push(element);
+    }
+
+    // 6. Trigger a real Re-Scan and update risk assessment
+    let newAssessment = assessment;
+    if (typeof runAllFirewallScans === "function") {
+      newAssessment = runAllFirewallScans();
+    } else if (typeof assessPageRisk === "function") {
+      newAssessment = assessPageRisk();
+    }
+
+    return {
+      quarantinedCount: quarantinedNodes.length,
+      quarantinedElements: quarantinedNodes,
+      newAssessment: newAssessment,
+      quarantineLog: [...sessionQuarantineLog]
+    };
+  } finally {
+    isSanitizing = false;
+  }
+}
+
 function runAllFirewallScans() {
   runPageScan();
   runHiddenContentScan();
@@ -2796,7 +3000,12 @@ if (typeof window !== "undefined") {
     assessPageRisk,
     assessRisk: assessPageRisk,
     runRiskAssessment,
-    runAllFirewallScans
+    runAllFirewallScans,
+    isElementImmune,
+    sanitizeSuspiciousContent,
+    sanitizePage: sanitizeSuspiciousContent,
+    quarantineLog: sessionQuarantineLog,
+    getQuarantineLog: () => sessionQuarantineLog
   });
 }
 
