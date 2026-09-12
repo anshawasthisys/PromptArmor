@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "AI Agent Prompt-Injection Firewall",
+  "version": "0.1.0",
+  "description": "Minimum working prototype for AI Agent Prompt-Injection Firewall.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
