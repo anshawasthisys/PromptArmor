@@ -812,7 +812,7 @@ if (typeof print === "function") {
       print(`  ${idx + 1}. [${reg.baselineId}] ${reg.transformation} (${reg.transformationClass}) -> Base: ${reg.baselineScore}, Trans: ${reg.transformedScore}`);
     });
   } else {
-    print("  (None: 100% of baseline-detected threats survived adversarial transformation)");
+    print("  (All baseline-detected threats remained detectable after adversarial transformation)");
   }
   print("==================================================");
 }
