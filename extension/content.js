@@ -1429,22 +1429,36 @@ function ensureFirewallUI() {
   if (!host) {
     host = document.createElement("div");
     host.id = "ai-agent-firewall-host";
+    host.style.setProperty("position", "fixed", "important");
+    host.style.setProperty("top", "0", "important");
+    host.style.setProperty("left", "0", "important");
+    host.style.setProperty("width", "0", "important");
+    host.style.setProperty("height", "0", "important");
+    host.style.setProperty("z-index", "2147483647", "important");
+    host.style.setProperty("pointer-events", "none", "important");
+    host.style.setProperty("margin", "0", "important");
+    host.style.setProperty("padding", "0", "important");
+    host.style.setProperty("border", "none", "important");
+    host.style.setProperty("background", "transparent", "important");
+    host.style.setProperty("display", "block", "important");
     isNew = true;
   }
 
   const shadow = host.shadowRoot || (host.attachShadow ? host.attachShadow({ mode: "open" }) : host);
 
   if (isNew) {
-    // Isolated Shadow DOM CSS
+    // Isolated Shadow DOM CSS with 100% opaque backgrounds
     const styleEl = document.createElement("style");
     styleEl.textContent = `
       :host {
         all: initial;
-        position: fixed;
-        z-index: 2147483647;
-        top: 0;
-        left: 0;
-        pointer-events: none;
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+        pointer-events: none !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
         font-size: 13px;
         line-height: 1.5;
@@ -1458,7 +1472,7 @@ function ensureFirewallUI() {
         padding: 0;
       }
 
-      /* Fixed Status Badge */
+      /* Fixed Status Badge (Fully Opaque) */
       .fw-badge {
         all: unset;
         position: fixed;
@@ -1470,19 +1484,20 @@ function ensureFirewallUI() {
         align-items: center;
         gap: 9px;
         padding: 8px 14px;
-        background: rgba(11, 19, 41, 0.94);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
+        background-color: #0b1329 !important;
+        background: #0b1329 !important;
+        opacity: 1 !important;
         border-radius: 9999px;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.1);
         transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
         user-select: none;
+        z-index: 2147483647;
       }
 
       .fw-badge:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.12);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.2);
       }
 
       .fw-badge:active {
@@ -1535,8 +1550,8 @@ function ensureFirewallUI() {
 
       /* Risk Theme Variants for Badge */
       .fw-theme-critical {
-        border-color: rgba(239, 68, 68, 0.6) !important;
-        box-shadow: 0 4px 20px rgba(239, 68, 68, 0.3), 0 0 0 1px rgba(239, 68, 68, 0.2) !important;
+        border-color: rgba(239, 68, 68, 0.8) !important;
+        box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.3) !important;
       }
       .fw-theme-critical .fw-badge-dot {
         background: #ef4444;
@@ -1548,8 +1563,8 @@ function ensureFirewallUI() {
       }
 
       .fw-theme-high {
-        border-color: rgba(249, 115, 22, 0.6) !important;
-        box-shadow: 0 4px 20px rgba(249, 115, 22, 0.3), 0 0 0 1px rgba(249, 115, 22, 0.2) !important;
+        border-color: rgba(249, 115, 22, 0.8) !important;
+        box-shadow: 0 4px 20px rgba(249, 115, 22, 0.4), 0 0 0 1px rgba(249, 115, 22, 0.3) !important;
       }
       .fw-theme-high .fw-badge-dot {
         background: #f97316;
@@ -1560,8 +1575,8 @@ function ensureFirewallUI() {
       }
 
       .fw-theme-medium {
-        border-color: rgba(245, 158, 11, 0.6) !important;
-        box-shadow: 0 4px 20px rgba(245, 158, 11, 0.25) !important;
+        border-color: rgba(245, 158, 11, 0.8) !important;
+        box-shadow: 0 4px 20px rgba(245, 158, 11, 0.35) !important;
       }
       .fw-theme-medium .fw-badge-dot {
         background: #f59e0b;
@@ -1572,8 +1587,8 @@ function ensureFirewallUI() {
       }
 
       .fw-theme-low {
-        border-color: rgba(16, 185, 129, 0.4) !important;
-        box-shadow: 0 4px 18px rgba(16, 185, 129, 0.15) !important;
+        border-color: rgba(16, 185, 129, 0.6) !important;
+        box-shadow: 0 4px 18px rgba(16, 185, 129, 0.25) !important;
       }
       .fw-theme-low .fw-badge-dot {
         background: #10b981;
@@ -1588,7 +1603,7 @@ function ensureFirewallUI() {
         50% { opacity: 0.4; transform: scale(0.85); }
       }
 
-      /* Threat Panel Container */
+      /* Threat Panel Container (100% Opaque, High Z-Index, Isolated) */
       .fw-panel {
         position: fixed;
         top: 66px;
@@ -1596,10 +1611,11 @@ function ensureFirewallUI() {
         width: 440px;
         max-width: calc(100vw - 32px);
         max-height: calc(100vh - 84px);
-        background: #0b1329;
-        border: 1px solid rgba(51, 65, 85, 0.85);
+        background-color: #0b1329 !important;
+        background: #0b1329 !important;
+        border: 1px solid #334155 !important;
         border-radius: 16px;
-        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
         pointer-events: auto;
         overflow: hidden;
         display: flex;
@@ -1608,23 +1624,26 @@ function ensureFirewallUI() {
         visibility: hidden;
         transform: translateY(-8px) scale(0.98);
         transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-        z-index: 2147483647;
+        z-index: 2147483647 !important;
+        isolation: isolate;
       }
 
       .fw-panel.fw-panel-visible {
-        opacity: 1;
-        visibility: visible;
+        opacity: 1 !important;
+        visibility: visible !important;
         transform: translateY(0) scale(1);
       }
 
-      /* Panel Header */
+      /* Panel Header (100% Opaque) */
       .fw-panel-header {
         padding: 14px 18px;
-        background: rgba(15, 23, 42, 0.8);
-        border-bottom: 1px solid rgba(51, 65, 85, 0.6);
+        background-color: #0f172a !important;
+        background: #0f172a !important;
+        border-bottom: 1px solid #1e293b !important;
         display: flex;
         align-items: center;
         justify-content: space-between;
+        flex-shrink: 0;
       }
 
       .fw-header-title-wrap {
@@ -1650,9 +1669,10 @@ function ensureFirewallUI() {
         text-transform: uppercase;
         padding: 2px 7px;
         border-radius: 999px;
-        background: rgba(56, 189, 248, 0.15);
+        background-color: #0c4a6e !important;
+        background: #0c4a6e !important;
         color: #38bdf8;
-        border: 1px solid rgba(56, 189, 248, 0.3);
+        border: 1px solid #0284c7;
         letter-spacing: 0.5px;
       }
 
@@ -1671,38 +1691,49 @@ function ensureFirewallUI() {
       }
 
       .fw-close-btn:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background-color: #1e293b !important;
+        background: #1e293b !important;
         color: #f8fafc;
       }
 
-      /* Scrollable Panel Body */
+      /* Scrollable Panel Body (100% Opaque & Contained Scroll) */
       .fw-panel-body {
         overflow-y: auto;
+        overscroll-behavior: contain;
         padding: 18px;
         display: flex;
         flex-direction: column;
         gap: 16px;
+        background-color: #0b1329 !important;
+        background: #0b1329 !important;
         scrollbar-width: thin;
-        scrollbar-color: rgba(51, 65, 85, 0.8) transparent;
+        scrollbar-color: #334155 #0b1329;
       }
 
       .fw-panel-body::-webkit-scrollbar {
         width: 6px;
       }
+      .fw-panel-body::-webkit-scrollbar-track {
+        background-color: #0b1329 !important;
+        background: #0b1329 !important;
+      }
       .fw-panel-body::-webkit-scrollbar-thumb {
-        background: rgba(51, 65, 85, 0.8);
+        background-color: #334155 !important;
+        background: #334155 !important;
         border-radius: 3px;
       }
 
-      /* Risk Score Hero Card */
+      /* Risk Score Hero Card (100% Opaque) */
       .fw-hero-card {
         border-radius: 12px;
         padding: 16px;
-        background: rgba(15, 23, 42, 0.7);
-        border: 1px solid rgba(51, 65, 85, 0.6);
+        background-color: #0f172a !important;
+        background: #0f172a !important;
+        border: 1px solid #1e293b !important;
         display: flex;
         flex-direction: column;
         gap: 12px;
+        flex-shrink: 0;
       }
 
       .fw-hero-top {
@@ -1724,24 +1755,28 @@ function ensureFirewallUI() {
       }
 
       .fw-risk-badge-critical {
-        background: rgba(239, 68, 68, 0.2);
-        color: #f87171;
-        border: 1px solid rgba(239, 68, 68, 0.45);
+        background-color: #450a0a !important;
+        background: #450a0a !important;
+        color: #fca5a5;
+        border: 1px solid #dc2626;
       }
       .fw-risk-badge-high {
-        background: rgba(249, 115, 22, 0.2);
-        color: #fb923c;
-        border: 1px solid rgba(249, 115, 22, 0.45);
+        background-color: #431407 !important;
+        background: #431407 !important;
+        color: #fdba74;
+        border: 1px solid #ea580c;
       }
       .fw-risk-badge-medium {
-        background: rgba(245, 158, 11, 0.2);
-        color: #fbbf24;
-        border: 1px solid rgba(245, 158, 11, 0.45);
+        background-color: #451a03 !important;
+        background: #451a03 !important;
+        color: #fde68a;
+        border: 1px solid #d97706;
       }
       .fw-risk-badge-low {
-        background: rgba(16, 185, 129, 0.2);
-        color: #34d399;
-        border: 1px solid rgba(16, 185, 129, 0.4);
+        background-color: #022c22 !important;
+        background: #022c22 !important;
+        color: #6ee7b7;
+        border: 1px solid #059669;
       }
 
       .fw-score-box {
@@ -1763,11 +1798,13 @@ function ensureFirewallUI() {
         color: #64748b;
       }
 
-      /* Action Notice */
+      /* Action Notice (100% Opaque) */
       .fw-action-box {
         padding: 8px 12px;
         border-radius: 8px;
-        background: rgba(2, 6, 23, 0.6);
+        background-color: #020617 !important;
+        background: #020617 !important;
+        border: 1px solid #1e293b;
         border-left: 3px solid #64748b;
         font-size: 12px;
         font-weight: 600;
@@ -1777,15 +1814,17 @@ function ensureFirewallUI() {
         gap: 8px;
       }
 
-      /* Threat Summary */
+      /* Threat Summary (100% Opaque) */
       .fw-summary-box {
         font-size: 12.5px;
         line-height: 1.55;
-        color: #94a3b8;
-        background: rgba(15, 23, 42, 0.5);
-        border: 1px solid rgba(51, 65, 85, 0.4);
+        color: #cbd5e1;
+        background-color: #0f172a !important;
+        background: #0f172a !important;
+        border: 1px solid #1e293b !important;
         border-radius: 10px;
         padding: 12px;
+        flex-shrink: 0;
       }
 
       /* Section Title */
@@ -1813,8 +1852,9 @@ function ensureFirewallUI() {
         align-items: flex-start;
         gap: 9px;
         padding: 8px 10px;
-        background: rgba(15, 23, 42, 0.6);
-        border: 1px solid rgba(51, 65, 85, 0.5);
+        background-color: #0f172a !important;
+        background: #0f172a !important;
+        border: 1px solid #1e293b !important;
         border-radius: 8px;
       }
 
@@ -1842,15 +1882,17 @@ function ensureFirewallUI() {
         color: #94a3b8;
       }
 
-      /* Mathematical Score Breakdown */
+      /* Mathematical Score Breakdown (100% Opaque) */
       .fw-math-box {
-        background: rgba(15, 23, 42, 0.6);
-        border: 1px solid rgba(51, 65, 85, 0.5);
+        background-color: #0f172a !important;
+        background: #0f172a !important;
+        border: 1px solid #1e293b !important;
         border-radius: 10px;
         padding: 12px;
         display: flex;
         flex-direction: column;
         gap: 10px;
+        flex-shrink: 0;
       }
 
       .fw-meter-row {
@@ -1869,7 +1911,8 @@ function ensureFirewallUI() {
 
       .fw-meter-bar-track {
         height: 6px;
-        background: rgba(51, 65, 85, 0.5);
+        background-color: #1e293b !important;
+        background: #1e293b !important;
         border-radius: 3px;
         overflow: hidden;
       }
@@ -1885,7 +1928,7 @@ function ensureFirewallUI() {
         flex-direction: column;
         gap: 5px;
         padding-top: 6px;
-        border-top: 1px solid rgba(51, 65, 85, 0.4);
+        border-top: 1px solid #1e293b;
       }
 
       .fw-synergy-item {
@@ -1897,9 +1940,10 @@ function ensureFirewallUI() {
       }
 
       .fw-synergy-pill {
-        background: rgba(99, 102, 241, 0.2);
-        border: 1px solid rgba(99, 102, 241, 0.4);
-        color: #a5b4fc;
+        background-color: #312e81 !important;
+        background: #312e81 !important;
+        border: 1px solid #4f46e5;
+        color: #c7d2fe;
         padding: 1px 6px;
         border-radius: 4px;
         font-weight: 700;
@@ -1913,11 +1957,12 @@ function ensureFirewallUI() {
         margin-top: 2px;
       }
 
-      /* Findings List Container */
+      /* Findings List Container (100% Opaque) */
       .fw-findings-wrap {
         display: flex;
         flex-direction: column;
         gap: 8px;
+        flex-shrink: 0;
       }
 
       .fw-findings-toggle-btn {
@@ -1940,14 +1985,18 @@ function ensureFirewallUI() {
         gap: 8px;
         max-height: 240px;
         overflow-y: auto;
+        overscroll-behavior: contain;
         padding-right: 4px;
+        background-color: #0b1329 !important;
+        background: #0b1329 !important;
       }
 
       .fw-finding-card {
         padding: 10px;
         border-radius: 8px;
-        background: rgba(2, 6, 23, 0.5);
-        border: 1px solid rgba(51, 65, 85, 0.5);
+        background-color: #070d1e !important;
+        background: #070d1e !important;
+        border: 1px solid #1e293b !important;
         display: flex;
         flex-direction: column;
         gap: 6px;
@@ -1977,20 +2026,23 @@ function ensureFirewallUI() {
         font-weight: 600;
         padding: 1px 5px;
         border-radius: 4px;
-        background: rgba(148, 163, 184, 0.15);
-        color: #94a3b8;
-        border: 1px solid rgba(148, 163, 184, 0.3);
+        background-color: #1e293b !important;
+        background: #1e293b !important;
+        color: #cbd5e1;
+        border: 1px solid #334155;
       }
 
       .fw-finding-snippet {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 11px;
-        background: rgba(0, 0, 0, 0.3);
+        background-color: #020617 !important;
+        background: #020617 !important;
         padding: 5px 8px;
         border-radius: 4px;
         color: #fca5a5;
         word-break: break-all;
-        border-left: 2px solid rgba(239, 68, 68, 0.5);
+        border: 1px solid #1e293b;
+        border-left: 3px solid #ef4444;
       }
 
       .fw-finding-reason {
@@ -2005,6 +2057,7 @@ function ensureFirewallUI() {
         flex-direction: column;
         gap: 8px;
         padding-top: 4px;
+        flex-shrink: 0;
       }
 
       .fw-btn-row {
@@ -2027,24 +2080,28 @@ function ensureFirewallUI() {
       }
 
       .fw-btn-primary {
-        background: #dc2626;
+        background-color: #dc2626 !important;
+        background: #dc2626 !important;
         color: #ffffff;
         border: 1px solid rgba(255, 255, 255, 0.2);
         box-shadow: 0 2px 10px rgba(220, 38, 38, 0.4);
       }
 
       .fw-btn-primary:hover {
-        background: #b91c1c;
+        background-color: #b91c1c !important;
+        background: #b91c1c !important;
       }
 
       .fw-btn-secondary {
-        background: rgba(30, 41, 59, 0.8);
+        background-color: #1e293b !important;
+        background: #1e293b !important;
         color: #cbd5e1;
-        border: 1px solid rgba(51, 65, 85, 0.8);
+        border: 1px solid #334155 !important;
       }
 
       .fw-btn-secondary:hover {
-        background: rgba(51, 65, 85, 0.8);
+        background-color: #334155 !important;
+        background: #334155 !important;
         color: #f8fafc;
       }
 
@@ -2053,22 +2110,25 @@ function ensureFirewallUI() {
         border-radius: 6px;
         font-size: 11px;
         line-height: 1.4;
-        background: rgba(30, 58, 138, 0.35);
-        border: 1px solid rgba(96, 165, 250, 0.4);
+        background-color: #172554 !important;
+        background: #172554 !important;
+        border: 1px solid #2563eb !important;
         color: #93c5fd;
         transition: all 0.2s ease;
       }
 
-      /* Footer */
+      /* Footer (100% Opaque) */
       .fw-footer {
         padding: 10px 18px;
-        background: rgba(2, 6, 23, 0.8);
-        border-top: 1px solid rgba(51, 65, 85, 0.6);
+        background-color: #020617 !important;
+        background: #020617 !important;
+        border-top: 1px solid #1e293b !important;
         font-size: 10px;
         color: #64748b;
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-shrink: 0;
       }
     `;
     shadow.appendChild(styleEl);
